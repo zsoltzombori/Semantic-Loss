@@ -124,18 +124,30 @@ def main(_):
   with tf.name_scope('wmc'):
     normalized_logits = tf.nn.sigmoid(y_mlp)
     wmc_tmp = tf.zeros([batch_number,])
+    prob_list = []
     for i in range(10):
         one_situation = tf.concat(
           [tf.concat([tf.ones([batch_number, i]), tf.zeros([batch_number, 1])], axis=1),
            tf.ones([batch_number, 10-i-1])], axis=1)
         wmc_tmp += tf.reduce_prod(one_situation - normalized_logits, axis=1)
+        prob = tf.abs(tf.reduce_prod(one_situation - normalized_logits, axis=1))
+        prob_list.append(prob)
   wmc_tmp = tf.abs(wmc_tmp)
   wmc = tf.reduce_mean(wmc_tmp)
 
+  # prp loss
+  prob_list = tf.stack(prob_list, axis=1)
+  log_n = tf.log(1e-20 + 1.0 - tf.reduce_sum(prob_list, axis=1))
+  log_d = 1/10 * tf.reduce_sum(tf.log(1e-20 + prob_list), axis=1)
+  prp_tmp = log_n - log_d
+  prp = tf.reduce_mean(prp_tmp)
+    
   with tf.name_scope('loss'):
     unlabel_examples = tf.ones([batch_number,]) - label_examples
     log_wmc = tf.log(wmc_tmp)
-    loss = -0.0005*tf.multiply(unlabel_examples, log_wmc) - 0.0005*tf.multiply(label_examples, log_wmc) + tf.multiply(label_examples, cross_entropy)
+    loss = tf.multiply(label_examples, cross_entropy)
+    loss += -FLAGS.wmc*tf.multiply(unlabel_examples, log_wmc) - FLAGS.wmc*tf.multiply(label_examples, log_wmc)
+    loss += FLAGS.prp * prp_tmp
     loss = tf.reduce_mean(loss)
   
   with tf.name_scope('adam_optimizer'):
@@ -154,22 +166,24 @@ def main(_):
 
   with tf.Session() as sess:
     sess.run(tf.global_variables_initializer())
-    train_average_accuracy, train_average_wmc, train_average_loss = 0.0, 0.0, 0.0
-    for i in range(50000):
+    train_average_accuracy, train_average_wmc, train_average_prp, train_average_loss = 0.0, 0.0, 0.0, 0.0
+    for i in range(FLAGS.steps):
       images, labels = mnist.train.next_batch(FLAGS.batch_size)
-      _, train_accuracy, train_wmc, train_loss =  sess.run([train_step, accuracy, wmc, loss], feed_dict={x: images, y_: labels, keep_prob: 0.5})
+      _, train_accuracy, train_wmc, train_prp, train_loss =  sess.run([train_step, accuracy, wmc, prp, loss], feed_dict={x: images, y_: labels, keep_prob: 0.5})
       train_average_accuracy += train_accuracy
       train_average_wmc += train_wmc
+      train_average_prp += train_prp
       train_average_loss += train_loss
 
       if i % 100 == 0:
         train_average_accuracy /= 100
         train_average_wmc /= 100
+        train_average_prp /= 100
         train_average_loss /= 100
         with open("log.txt", 'a') as outFile:
-          print('step %d, training_accuracy %g, train_loss %g, wmc %g' % (i, train_average_accuracy, train_average_loss, train_average_wmc))
-          outFile.write('step %d, training_accuracy %g, train_loss %g, wmc %g\n' % (i, train_average_accuracy, train_average_loss, train_average_wmc))
-          train_average_accuracy, train_average_wmc, train_average_loss = 0.0, 0.0, 0.0
+          print('step %d, training_accuracy %g, train_loss %g, wmc %g, prp %g' % (i, train_average_accuracy, train_average_loss, train_average_wmc, train_average_prp))
+          outFile.write('step %d, training_accuracy %g, train_loss %g, wmc %g, prp %g\n' % (i, train_average_accuracy, train_average_loss, train_average_wmc, train_average_prp))
+          train_average_accuracy, train_average_wmc, train_average_prp, train_average_loss = 0.0, 0.0, 0.0, 0.0
       if i % 500 == 0:
 
           test_accuracy = accuracy.eval(feed_dict={
@@ -188,5 +202,12 @@ if __name__ == '__main__':
                       help='Num of labeled examples provided for semi-supervised learning.')
   parser.add_argument('--batch_size', type=int,
                       help='Batch size for mini-batch Adams gradient descent.')
+  parser.add_argument('--wmc', type=float,
+                      help='Weight of the wmc loss.', default=0.0005)
+  parser.add_argument('--prp', type=float,
+                      help='Weight of the prp loss.', default=0.0005)
+  parser.add_argument('--steps', type=int,
+                      help='Number of update steps.', default=50000)
+  
   FLAGS, unparsed = parser.parse_known_args()
   tf.app.run(main=main, argv=[sys.argv[0]] + unparsed)
