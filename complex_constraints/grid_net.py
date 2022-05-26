@@ -93,7 +93,7 @@ def main(_):
     loss += FLAGS.prp * tf.reduce_mean(prp_loss)
   else:
     loss = cross_entropy - FLAGS.wmc * tf.log(tf.reduce_mean(wmc * ce_weights)) + FLAGS.l2_decay * regularizers
-    loss += FLAGS.prp * tf.reduce_mean(prp_loss * ce_weights)
+    # loss += FLAGS.prp * tf.reduce_mean(prp_loss * ce_weights)
   # train_step = tf.train.GradientDescentOptimizer(0.5).minimize(loss)
   train_step = tf.train.AdamOptimizer().minimize(loss)
 
@@ -109,8 +109,8 @@ def main(_):
   T0 = time.time()
   for i in range(FLAGS.iters):
     sys.stdout.flush()
-    # batch_xs, batch_ys = grid_data.get_batch(32)
-    batch_xs, batch_ys = grid_data.train_data, grid_data.train_labels
+    batch_xs, batch_ys = grid_data.get_batch(32)
+    # batch_xs, batch_ys = grid_data.train_data, grid_data.train_labels
     # batch_xs, batch_ys = mnist.train.next_batch(100)
     sess.run(train_step, feed_dict={x: batch_xs, y_: batch_ys})
     # Every 1k iterations check accuracy
