@@ -4,6 +4,7 @@ from __future__ import print_function
 
 import argparse
 import sys
+import time
 
 import numpy as np
 from numpy.random import permutation
@@ -13,6 +14,8 @@ from grid_data import GridData
 from compute_mpe import CircuitMPE
 
 import tensorflow as tf
+
+import prp
 
 
 FLAGS = None
@@ -66,24 +69,36 @@ def main(_):
   cmpe = CircuitMPE('4-grid-out.vtree.sd', '4-grid-all-pairs-sd.sdd')
   wmc = cmpe.get_tf_ac([[1.0 - ny,ny] for ny in yu + xu[24:]])
 
+  # prp loss
+  removed = x[:,:24]
+  endpoints = x[:,24:]
+  logits  = y
+  prp_loss = prp.prp_loss(logits, endpoints, removed)
+
   # Get supervised part (rest is unsupervised)
   perm = permutation(grid_data.train_data.shape[0])
   sup_train_inds = perm[:int(grid_data.train_data.shape[0] * FLAGS.give_labels)]
   unsup_train_inds = perm[int(grid_data.train_data.shape[0] * FLAGS.give_labels):]
   ce_weights = np.zeros([grid_data.train_data.shape[0], 1])
   ce_weights[sup_train_inds, :] = 1
-  # cross_entropy = tf.reduce_mean(
-  #     tf.nn.sigmoid_cross_entropy_with_logits(labels=y_, logits=y))
-  cross_entropy = tf.losses.sigmoid_cross_entropy(y_, y, weights=ce_weights)
+  if FLAGS.use_unlabeled:
+    cross_entropy = tf.losses.sigmoid_cross_entropy(y_, y, weights=ce_weights)
+  else:
+    cross_entropy = tf.reduce_mean(
+      tf.nn.sigmoid_cross_entropy_with_logits(labels=y_, logits=y))
+
   regularizers = sum(tf.nn.l2_loss(weights) for weights in W)
   if FLAGS.use_unlabeled:
     loss = cross_entropy - FLAGS.wmc * tf.log(tf.reduce_mean(wmc)) + FLAGS.l2_decay * regularizers
+    loss += FLAGS.prp * tf.reduce_mean(prp_loss)
   else:
     loss = cross_entropy - FLAGS.wmc * tf.log(tf.reduce_mean(wmc * ce_weights)) + FLAGS.l2_decay * regularizers
+    loss += FLAGS.prp * tf.reduce_mean(prp_loss * ce_weights)
   # train_step = tf.train.GradientDescentOptimizer(0.5).minimize(loss)
   train_step = tf.train.AdamOptimizer().minimize(loss)
 
   full_loss = tf.losses.sigmoid_cross_entropy(y_, y) - FLAGS.wmc * tf.log(tf.reduce_mean(wmc))
+  full_loss += FLAGS.prp * tf.reduce_mean(prp_loss)
 
   sess = tf.InteractiveSession()
   tf.global_variables_initializer().run()
@@ -91,14 +106,17 @@ def main(_):
   # For early stopping
   prev_loss = 1e15
   # Train
+  T0 = time.time()
   for i in range(FLAGS.iters):
+    sys.stdout.flush()
     # batch_xs, batch_ys = grid_data.get_batch(32)
     batch_xs, batch_ys = grid_data.train_data, grid_data.train_labels
     # batch_xs, batch_ys = mnist.train.next_batch(100)
     sess.run(train_step, feed_dict={x: batch_xs, y_: batch_ys})
     # Every 1k iterations check accuracy
-    if i % 100 == 0:
+    if i % 10 == 0:
       print("After %d iterations" % i)
+      print("Time since start:", time.time() - T0, "sec")
       # Get outputs
       train_out = sess.run(tf.nn.sigmoid(y), feed_dict={x: grid_data.train_data[sup_train_inds, :],
                                       y_: grid_data.train_labels[sup_train_inds, :]})
@@ -124,9 +142,12 @@ def main(_):
       valid_loss = sess.run(full_loss, feed_dict={x: grid_data.valid_data, y_: grid_data.valid_labels})
       print("Validation loss: %f" % valid_loss)
       print("Train WMC: %f" % sess.run(tf.log(tf.reduce_mean(wmc)), feed_dict={x: grid_data.train_data[sup_train_inds, :], y_: grid_data.train_labels[sup_train_inds, :]}))
+      print("Train PRP: %f" % sess.run(tf.reduce_mean(prp_loss), feed_dict={x: grid_data.train_data[sup_train_inds, :], y_: grid_data.train_labels[sup_train_inds, :]}))
       if FLAGS.use_unlabeled:
         print("Unlabeled train WMC: %f" % sess.run(tf.log(tf.reduce_mean(wmc)), feed_dict={x: grid_data.train_data[unsup_train_inds, :], y_: grid_data.train_labels[unsup_train_inds, :]}))
+        print("Unlabeled train PRP: %f" % sess.run(tf.reduce_mean(prp_loss), feed_dict={x: grid_data.train_data[unsup_train_inds, :], y_: grid_data.train_labels[unsup_train_inds, :]}))
       print("Validation WMC: %f" % sess.run(tf.reduce_mean(wmc), feed_dict={x: grid_data.valid_data, y_: grid_data.valid_labels}))
+      print("Validation PRP: %f" % sess.run(tf.reduce_mean(prp_loss), feed_dict={x: grid_data.valid_data, y_: grid_data.valid_labels}))
 
       print("Percentage of predictions that follow constraint: %f" % (float(np.sum([cmpe.weighted_model_count([(1-p, p) for p in np.concatenate((o, inp[24:]))]) for o, inp in zip(np.array(valid_out + 0.5, int), grid_data.valid_data)]))/float(grid_data.valid_data.shape[0])))
       
@@ -155,8 +176,8 @@ def main(_):
 
   print(sess.run(accuracy, feed_dict={x: grid_data.valid_data,
                                       y_: grid_data.valid_labels}))
-  print(sess.run(cross_entropy, feed_dict={x: grid_data.valid_data,
-                                           y_: grid_data.valid_labels}))
+  # print(sess.run(cross_entropy, feed_dict={x: grid_data.valid_data,
+  #                                          y_: grid_data.valid_labels}))
   print(sess.run(tf.reduce_mean(wmc), feed_dict={x: grid_data.valid_data,
                                           y_: grid_data.valid_labels}))
 
@@ -185,5 +206,7 @@ if __name__ == '__main__':
                       help='Use this flag to enable semi supervised learning with WMC')
   parser.add_argument('--l2_decay', type=float, default=0.0,
                       help='L2 weight decay coefficient')
+  parser.add_argument('--prp', type=float, default=0.0,
+                      help='Coefficient of prp in loss')
   FLAGS, unparsed = parser.parse_known_args()
   tf.app.run(main=main, argv=[sys.argv[0]] + unparsed)

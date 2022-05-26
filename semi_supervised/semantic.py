@@ -137,8 +137,8 @@ def main(_):
 
   # prp loss
   prob_list = tf.stack(prob_list, axis=1)
-  log_n = tf.log(1e-20 + 1.0 - tf.reduce_sum(prob_list, axis=1))
-  log_d = 1/10 * tf.reduce_sum(tf.log(1e-20 + prob_list), axis=1)
+  log_n = tf.log(tf.maximum(1e-5, 1.0 - tf.reduce_sum(prob_list, axis=1)))
+  log_d = 1/10 * tf.reduce_sum(tf.log(tf.maximum(1e-10, prob_list)), axis=1)
   prp_tmp = log_n - log_d
   prp = tf.reduce_mean(prp_tmp)
     
@@ -147,7 +147,8 @@ def main(_):
     log_wmc = tf.log(wmc_tmp)
     loss = tf.multiply(label_examples, cross_entropy)
     loss += -FLAGS.wmc*tf.multiply(unlabel_examples, log_wmc) - FLAGS.wmc*tf.multiply(label_examples, log_wmc)
-    loss += FLAGS.prp * prp_tmp
+    if FLAGS.prp > 0:
+      loss += FLAGS.prp * prp_tmp
     loss = tf.reduce_mean(loss)
   
   with tf.name_scope('adam_optimizer'):
@@ -169,7 +170,7 @@ def main(_):
     train_average_accuracy, train_average_wmc, train_average_prp, train_average_loss = 0.0, 0.0, 0.0, 0.0
     for i in range(FLAGS.steps):
       images, labels = mnist.train.next_batch(FLAGS.batch_size)
-      _, train_accuracy, train_wmc, train_prp, train_loss =  sess.run([train_step, accuracy, wmc, prp, loss], feed_dict={x: images, y_: labels, keep_prob: 0.5})
+      _, train_accuracy, train_wmc, train_prp, train_loss =  sess.run([train_step, accuracy, wmc, prp, loss], feed_dict={x: images, y_: labels, keep_prob: FLAGS.keep_prob})
       train_average_accuracy += train_accuracy
       train_average_wmc += train_wmc
       train_average_prp += train_prp
@@ -208,6 +209,8 @@ if __name__ == '__main__':
                       help='Weight of the prp loss.', default=0.0005)
   parser.add_argument('--steps', type=int,
                       help='Number of update steps.', default=50000)
+  parser.add_argument('--keep_prob', type=float,
+                      help='Dropout keep prob.', default=0.5)
   
   FLAGS, unparsed = parser.parse_known_args()
   tf.app.run(main=main, argv=[sys.argv[0]] + unparsed)

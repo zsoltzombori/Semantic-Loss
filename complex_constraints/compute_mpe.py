@@ -21,7 +21,7 @@ class CircuitMPE:
 
     def compute_mpe_inst(self, lit_weights, binary_encoding=True):
         mpe_inst = self.beta.get_weighted_mpe(lit_weights)[1]
-        print self.beta.model_count()
+        # print self.beta.model_count()
         if binary_encoding:
             # Sort by variable, but ignoring negatives
             mpe_inst.sort(key=lambda x: abs(x))
